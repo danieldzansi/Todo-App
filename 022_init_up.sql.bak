@@ -1,0 +1,11 @@
+-- +goose Up
+
+CREATE TABLE todos(
+    id UUID PRIMARY KEY DEFAULT ,
+    title TEXT NOT NULL,
+    description TEXT,
+    completed BOOLEAN DEFAULT FALSE,
+    due_date TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
