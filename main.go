@@ -49,6 +49,7 @@ func main() {
 
 		todos := api.Group("/todos")
 		{
+
 			todos.GET("/", todoHandler.GetAllTodos)
 			todos.GET("/:id", todoHandler.GetTodoByID)
 			todos.POST("/", todoHandler.CreateTodo)
