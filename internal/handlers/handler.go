@@ -16,14 +16,21 @@ type TodoHandler struct {
 	svc services.TodoService
 }
 
+type UserHandler struct {
+	authSvc services.AuthService
+}
+
 func NewTodoHandler(s services.TodoService) *TodoHandler {
 	return &TodoHandler{svc: s}
+}
+
+func NewUserHandler(authSvc services.AuthService) *UserHandler {
+	return &UserHandler{authSvc: authSvc}
 }
 
 // DummyJSON base URL
 const dummyURL = "https://dummyjson.com"
 
-// Reusable helper to call DummyJSON API
 func fetchDummyJSON(method, endpoint string, body interface{}) ([]byte, error) {
 	url := dummyURL + endpoint
 
@@ -52,10 +59,6 @@ func fetchDummyJSON(method, endpoint string, body interface{}) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-//
-// ====== HANDLERS (switch between Local DB & DummyJSON) ======
-//
-
 func (h *TodoHandler) GetAllTodos(c *gin.Context) {
 	if c.Query("source") == "online" {
 		data, err := fetchDummyJSON("GET", "/todos", nil)
@@ -67,8 +70,14 @@ func (h *TodoHandler) GetAllTodos(c *gin.Context) {
 		return
 	}
 
-	// Local DB
-	todos, err := h.svc.GetAllTodos()
+	userIDVal, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	userID, _ := userIDVal.(uuid.UUID)
+
+	todos, err := h.svc.GetAllTodosByUser(userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -88,14 +97,19 @@ func (h *TodoHandler) GetTodoByID(c *gin.Context) {
 		return
 	}
 
-	// Local DB
 	idStr := c.Param("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	todo, err := h.svc.GetTodoByID(id)
+	userIDVal, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	userID, _ := userIDVal.(uuid.UUID)
+	todo, err := h.svc.GetTodoByIDForUser(userID, id)
 	if err != nil {
 		if err == models.ErrTodoNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "todo not found"})
@@ -123,13 +137,18 @@ func (h *TodoHandler) CreateTodo(c *gin.Context) {
 		return
 	}
 
-	// Local DB
 	var req models.CreateTodoRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	todo, err := h.svc.CreateTodo(&req)
+	userIDVal, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	userID, _ := userIDVal.(uuid.UUID)
+	todo, err := h.svc.CreateTodoForUser(userID, &req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -154,7 +173,6 @@ func (h *TodoHandler) UpdateTodo(c *gin.Context) {
 		return
 	}
 
-	// Local DB
 	idStr := c.Param("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
@@ -166,7 +184,13 @@ func (h *TodoHandler) UpdateTodo(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	todo, err := h.svc.UpdateTodo(id, &req)
+	userIDVal, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	userID, _ := userIDVal.(uuid.UUID)
+	todo, err := h.svc.UpdateTodoForUser(userID, id, &req)
 	if err != nil {
 		if err == models.ErrTodoNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "todo not found"})
@@ -190,14 +214,19 @@ func (h *TodoHandler) DeleteTodo(c *gin.Context) {
 		return
 	}
 
-	// Local DB
 	idStr := c.Param("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	if err := h.svc.DeleteTodo(id); err != nil {
+	userIDVal, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	userID, _ := userIDVal.(uuid.UUID)
+	if err := h.svc.DeleteTodoForUser(userID, id); err != nil {
 		if err == models.ErrTodoNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "todo not found"})
 			return
@@ -209,20 +238,25 @@ func (h *TodoHandler) DeleteTodo(c *gin.Context) {
 }
 
 func (h *TodoHandler) ToggleTodoComplete(c *gin.Context) {
-	// NOTE: DummyJSON doesn’t support PATCH complete toggle directly
+
 	if c.Query("source") == "online" {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": "toggle complete not supported on DummyJSON"})
 		return
 	}
 
-	// Local DB
 	idStr := c.Param("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	todo, err := h.svc.ToggleTodoComplete(id)
+	userIDVal, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	userID, _ := userIDVal.(uuid.UUID)
+	todo, err := h.svc.ToggleTodoCompleteForUser(userID, id)
 	if err != nil {
 		if err == models.ErrTodoNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "todo not found"})
@@ -232,4 +266,101 @@ func (h *TodoHandler) ToggleTodoComplete(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"todo": todo})
+}
+
+// User Handler Methods
+func (h *UserHandler) Signup(c *gin.Context) {
+	var req models.SignupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	user, err := h.authSvc.Signup(&req)
+	if err != nil {
+		if err == models.ErrUserAlreadyExists {
+			c.JSON(http.StatusConflict, gin.H{
+				"success": false,
+				"error":   "User with this email already exists",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	// Remove password from response
+	user.Password = ""
+
+	c.JSON(http.StatusCreated, gin.H{
+		"success": true,
+		"message": "User created successfully",
+		"data":    user,
+	})
+}
+
+func (h *UserHandler) Login(c *gin.Context) {
+	var req models.LoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	resp, err := h.authSvc.Login(&req)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": resp})
+}
+
+func (h *UserHandler) GetUserByID(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid user ID",
+		})
+		return
+	}
+
+	user, err := h.authSvc.GetUserByID(id)
+	if err != nil {
+		if err == models.ErrUserNotFound {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error":   "User not found",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	// Remove password from response
+	user.Password = ""
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    user,
+	})
+}
+
+// GetAllUsers returns all users
+func (h *UserHandler) GetAllUsers(c *gin.Context) {
+	users, err := h.authSvc.GetAllUsers()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": users})
 }

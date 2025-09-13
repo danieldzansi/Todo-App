@@ -16,9 +16,24 @@ type TodoRepository interface {
 	UpdateTodo(id uuid.UUID, req *models.UpdateTodoRequest) (*models.Todo, error)
 	DeleteTodo(id uuid.UUID) error
 	ToggleTodoComplete(id uuid.UUID) (*models.Todo, error)
+	GetAllTodosByUser(userID uuid.UUID) ([]models.Todo, error)
+	GetTodoByIDForUser(userID uuid.UUID, id uuid.UUID) (*models.Todo, error)
+	UpdateTodoForUser(userID uuid.UUID, id uuid.UUID, req *models.UpdateTodoRequest) (*models.Todo, error)
+	DeleteTodoForUser(userID uuid.UUID, id uuid.UUID) error
+	ToggleTodoCompleteForUser(userID uuid.UUID, id uuid.UUID) (*models.Todo, error)
+}
+
+type UserRepository interface {
+	CreateUser(user models.User) error
+	GetUserByEmail(email string) (*models.User, error)
+	GetUserByID(id uuid.UUID) (*models.User, error)
+	GetAllUsers() ([]models.User, error)
 }
 
 type todoRepository struct {
+	db *sql.DB
+}
+type userRepository struct {
 	db *sql.DB
 }
 
@@ -26,10 +41,80 @@ func NewTodoRepository(db *sql.DB) TodoRepository {
 	return &todoRepository{db: db}
 }
 
+func NewUserRepository(db *sql.DB) UserRepository {
+	return &userRepository{db: db}
+}
+func (r *userRepository) CreateUser(user models.User) error {
+	_, err := r.db.Exec(`
+		INSERT INTO users (id, name, email, password)
+		VALUES ($1, $2, $3, $4)
+	`, user.ID, user.Name, user.Email, user.Password)
+	return err
+}
+
+func (r *userRepository) GetUserByEmail(email string) (*models.User, error) {
+	var u models.User
+	err := r.db.QueryRow(`
+		SELECT id, name, email, password, created_at, updated_at
+		FROM users
+		WHERE email = $1
+	`, email).Scan(&u.ID, &u.Name, &u.Email, &u.Password, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, models.ErrUserNotFound
+		}
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (r *userRepository) GetAllUsers() ([]models.User, error) {
+	rows, err := r.db.Query(`
+		SELECT id, name, email, created_at, updated_at
+		FROM users
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []models.User
+	for rows.Next() {
+		var u models.User
+		if err := rows.Scan(&u.ID, &u.Name, &u.Email, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan user: %w", err)
+		}
+		users = append(users, u)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
+	return users, nil
+}
+
+func (r *userRepository) GetUserByID(id uuid.UUID) (*models.User, error) {
+	var u models.User
+	err := r.db.QueryRow(`
+		SELECT id, name, email, password, created_at, updated_at
+		FROM users
+		WHERE id = $1
+	`, id).Scan(&u.ID, &u.Name, &u.Email, &u.Password, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, models.ErrUserNotFound
+		}
+		return nil, err
+	}
+	return &u, nil
+}
+
 func (r *todoRepository) CreateTodo(todo *models.Todo) error {
 	query := `
-	  INSERT INTO todos(id,title,description,completed,due_date,created_at,updated_at)
-	  VALUES ($1, $2, $3, $4, $5, $6, $7)
+	  INSERT INTO todos(id,title,description,completed,due_date,user_id,created_at,updated_at)
+	  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
 	now := time.Now()
 	todo.ID = uuid.New()
@@ -42,6 +127,7 @@ func (r *todoRepository) CreateTodo(todo *models.Todo) error {
 		todo.Description,
 		todo.Completed,
 		todo.DueDate,
+		todo.UserID,
 		todo.CreatedAt,
 		todo.UpdatedAt,
 	)
@@ -77,6 +163,33 @@ func (r *todoRepository) GetAllTodos() ([]models.Todo, error) {
 	return todos, nil
 }
 
+func (r *todoRepository) GetAllTodosByUser(userID uuid.UUID) ([]models.Todo, error) {
+	query := `
+	  SELECT id, title, description, completed, due_date, user_id, created_at, updated_at
+	  FROM todos
+	  WHERE user_id = $1
+	  ORDER BY created_at DESC
+	`
+	rows, err := r.db.Query(query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query user todos: %w", err)
+	}
+	defer rows.Close()
+
+	var todos []models.Todo
+	for rows.Next() {
+		var t models.Todo
+		if err := rows.Scan(&t.ID, &t.Title, &t.Description, &t.Completed, &t.DueDate, &t.UserID, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan todo: %w", err)
+		}
+		todos = append(todos, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+	return todos, nil
+}
+
 func (r *todoRepository) GetTodoByID(id uuid.UUID) (*models.Todo, error) {
 	query := `
 	  SELECT id, title, description, completed, due_date, created_at, updated_at
@@ -90,6 +203,23 @@ func (r *todoRepository) GetTodoByID(id uuid.UUID) (*models.Todo, error) {
 			return nil, models.ErrTodoNotFound
 		}
 		return nil, fmt.Errorf("failed to get todo by id: %w", err)
+	}
+	return &t, nil
+}
+
+func (r *todoRepository) GetTodoByIDForUser(userID uuid.UUID, id uuid.UUID) (*models.Todo, error) {
+	query := `
+	  SELECT id, title, description, completed, due_date, user_id, created_at, updated_at
+	  FROM todos
+	  WHERE id = $1 AND user_id = $2
+	`
+	var t models.Todo
+	err := r.db.QueryRow(query, id, userID).Scan(&t.ID, &t.Title, &t.Description, &t.Completed, &t.DueDate, &t.UserID, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, models.ErrTodoNotFound
+		}
+		return nil, fmt.Errorf("failed to get user todo by id: %w", err)
 	}
 	return &t, nil
 }
@@ -132,11 +262,62 @@ func (r *todoRepository) UpdateTodo(id uuid.UUID, req *models.UpdateTodoRequest)
 	return existing, nil
 }
 
+func (r *todoRepository) UpdateTodoForUser(userID uuid.UUID, id uuid.UUID, req *models.UpdateTodoRequest) (*models.Todo, error) {
+	existing, err := r.GetTodoByIDForUser(userID, id)
+	if err != nil {
+		return nil, err
+	}
+	if req.Title != nil {
+		existing.Title = *req.Title
+	}
+	if req.Description != nil {
+		existing.Description = *req.Description
+	}
+	if req.DueDate != nil {
+		existing.DueDate = req.DueDate
+	}
+	now := time.Now()
+	existing.UpdatedAt = now
+	query := `
+	  UPDATE todos
+	  SET title = $1, description = $2, due_date = $3, updated_at = $4
+	  WHERE id = $5 AND user_id = $6
+	`
+	res, err := r.db.Exec(query, existing.Title, existing.Description, existing.DueDate, existing.UpdatedAt, id, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update user todo: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if affected == 0 {
+		return nil, models.ErrTodoNotFound
+	}
+	return existing, nil
+}
+
 func (r *todoRepository) DeleteTodo(id uuid.UUID) error {
 	query := `DELETE FROM todos WHERE id = $1`
 	res, err := r.db.Exec(query, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete todo: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if affected == 0 {
+		return models.ErrTodoNotFound
+	}
+	return nil
+}
+
+func (r *todoRepository) DeleteTodoForUser(userID uuid.UUID, id uuid.UUID) error {
+	query := `DELETE FROM todos WHERE id = $1 AND user_id = $2`
+	res, err := r.db.Exec(query, id, userID)
+	if err != nil {
+		return fmt.Errorf("failed to delete user todo: %w", err)
 	}
 	affected, err := res.RowsAffected()
 	if err != nil {
@@ -164,6 +345,32 @@ func (r *todoRepository) ToggleTodoComplete(id uuid.UUID) (*models.Todo, error) 
 	res, err := r.db.Exec(query, existing.Completed, existing.UpdatedAt, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to toggle todo: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if affected == 0 {
+		return nil, models.ErrTodoNotFound
+	}
+	return existing, nil
+}
+
+func (r *todoRepository) ToggleTodoCompleteForUser(userID uuid.UUID, id uuid.UUID) (*models.Todo, error) {
+	existing, err := r.GetTodoByIDForUser(userID, id)
+	if err != nil {
+		return nil, err
+	}
+	existing.Completed = !existing.Completed
+	existing.UpdatedAt = time.Now()
+	query := `
+	  UPDATE todos
+	  SET completed = $1, updated_at = $2
+	  WHERE id = $3 AND user_id = $4
+	`
+	res, err := r.db.Exec(query, existing.Completed, existing.UpdatedAt, id, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to toggle user todo: %w", err)
 	}
 	affected, err := res.RowsAffected()
 	if err != nil {
